@@ -1,0 +1,171 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Version tag to release (e.g. v1.0.0)'
+        required: false
+        default: ''
+      draft:
+        description: 'Publish as draft'
+        type: boolean
+        default: false
+      prerelease:
+        description: 'Publish as prerelease'
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build, Package & Publish Release
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine Version
+        id: version
+        run: |
+          RAW_TAG="${{ github.event.inputs.tag_name || github.ref_name }}"
+          # Strip prefix if needed
+          VERSION="${RAW_TAG#v}"
+          if [[ -z "$VERSION" ]]; then
+            VERSION="1.0.0"
+            RAW_TAG="v1.0.0"
+          fi
+          echo "TAG_NAME=${RAW_TAG}" >> $GITHUB_ENV
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+          echo "Selected version: ${VERSION} (Tag: ${RAW_TAG})"
+
+      - name: Extract Changelog Release Notes
+        run: |
+          python3 - << 'EOF'
+          import re, os
+
+          version = os.environ.get("VERSION", "").strip()
+          extracted_notes = ""
+
+          if os.path.exists("CHANGELOG.md") and version:
+              with open("CHANGELOG.md", "r", encoding="utf-8") as f:
+                  content = f.read()
+
+              # Match ## [version] ... up to the next ## [ heading or end of file
+              pattern = rf"##\s*\[{re.escape(version)}\][^\n]*\n(.*?)(?=\n##\s*\[|\Z)"
+              match = re.search(pattern, content, re.DOTALL)
+              if match:
+                  extracted_notes = match.group(1).strip()
+
+          with open("release_notes.md", "w", encoding="utf-8") as out:
+              if extracted_notes:
+                  out.write(extracted_notes + "\n")
+                  print(f"Extracted release notes for version {version}:")
+                  print(extracted_notes)
+              else:
+                  print(f"No entry found in CHANGELOG.md for version {version}; using auto-generated notes.")
+          EOF
+
+      - name: Install Packaging Utilities
+        run: |
+          brew install create-dmg || true
+
+      - name: Setup Apple Developer Keychain (Optional)
+        id: keychain
+        env:
+          CERT_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD || 'temporary-ci-password' }}
+        run: |
+          if [[ -n "${CERT_BASE64}" && -n "${CERT_PASSWORD}" ]]; then
+            echo "Importing Apple Developer Certificate..."
+            KEYCHAIN_PATH=$RUNNER_TEMP/build.keychain
+            security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+            security default-keychain -s "$KEYCHAIN_PATH"
+            security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+            CERT_PATH=$RUNNER_TEMP/certificate.p12
+            echo "$CERT_BASE64" | base64 --decode > "$CERT_PATH"
+            security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+            echo "HAVE_APPLE_CERT=true" >> $GITHUB_ENV
+          else
+            echo "No Apple Developer Certificate secret configured; proceeding with ad-hoc signing."
+            echo "HAVE_APPLE_CERT=false" >> $GITHUB_ENV
+          fi
+
+      - name: Build Application Bundle
+        run: |
+          if [[ "${HAVE_APPLE_CERT}" == "true" ]]; then
+            xcodebuild build \
+              -scheme GooCal \
+              -configuration Release \
+              -derivedDataPath build \
+              CODE_SIGN_STYLE="Manual" \
+              CODE_SIGN_IDENTITY="${{ secrets.APPLE_CODE_SIGN_IDENTITY || 'Developer ID Application' }}" \
+              DEVELOPMENT_TEAM="${{ secrets.APPLE_TEAM_ID }}"
+          else
+            xcodebuild build \
+              -scheme GooCal \
+              -configuration Release \
+              -derivedDataPath build \
+              CODE_SIGN_IDENTITY="-" \
+              CODE_SIGNING_REQUIRED=NO \
+              DEVELOPMENT_TEAM=""
+          fi
+
+      - name: Package DMG and ZIP
+        run: |
+          APP_PATH="build/Build/Products/Release/GooCal.app"
+          chmod +x ./scripts/package-dmg.sh
+          ./scripts/package-dmg.sh "$APP_PATH" dist "${{ env.VERSION }}"
+
+      - name: Notarize Application & Disk Image (Optional)
+        if: env.HAVE_APPLE_CERT == 'true' && env.APPLE_ID != ''
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          echo "Submitting DMG for Apple Notarization..."
+          DMG_PATH="dist/GooCal-${{ env.VERSION }}.dmg"
+          xcrun notarytool submit "$DMG_PATH" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+
+          echo "Stapling notarization ticket to DMG..."
+          xcrun stapler staple "$DMG_PATH"
+
+          # Re-compute checksum after stapling
+          cd dist
+          shasum -a 256 "GooCal-${{ env.VERSION }}.dmg" > "GooCal-${{ env.VERSION }}.dmg.sha256"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: GooCal ${{ env.TAG_NAME }}
+          body_path: release_notes.md
+          draft: ${{ github.event.inputs.draft || false }}
+          prerelease: ${{ github.event.inputs.prerelease || false }}
+          generate_release_notes: true
+          files: |
+            dist/GooCal-*.dmg
+            dist/GooCal-*.dmg.sha256
+            dist/GooCal-*.zip
+            dist/GooCal-*.zip.sha256
