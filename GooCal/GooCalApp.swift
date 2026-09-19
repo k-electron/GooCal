@@ -2,31 +2,32 @@
 //  GooCalApp.swift
 //  GooCal
 //
-//  Created by Karim Fatehi on 9/18/26.
-//
 
 import SwiftUI
-import SwiftData
 
+/// Main entry point for the GooCal menu bar accessory application.
+///
+/// Operates without a Dock presence (`LSUIElement`), delegating user interactions
+/// to a menu bar extra with a window-style popover and an independent Settings scene.
 @main
 struct GooCalApp: App {
-    var sharedModelContainer: ModelContainer = {
-        let schema = Schema([
-            Item.self,
-        ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
-
-        do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
-        } catch {
-            fatalError("Could not create ModelContainer: \(error)")
-        }
-    }()
+    @State private var appState = AppState()
 
     var body: some Scene {
-        WindowGroup {
-            ContentView()
+        MenuBarExtra {
+            PopoverContentView()
+                .environment(appState)
+        } label: {
+            HStack {
+                Image(systemName: appState.menuBarIconName)
+                Text(appState.menuBarTitle)
+            }
         }
-        .modelContainer(sharedModelContainer)
+        .menuBarExtraStyle(.window)
+
+        Settings {
+            SettingsView()
+                .environment(appState)
+        }
     }
 }
