@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 110;
+	objectVersion = 77;
 	objects = {
 
 /* Begin PBXContainerItemProxy section */
@@ -439,11 +439,6 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.6;
 				MARKETING_VERSION = 1.0;
-				OTHER_LDFLAGS = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/build/GooCal.build/$(CONFIGURATION)/GooCal.build/Objects-normal/$(CURRENT_ARCH)/AppState.o",
-					"$(PROJECT_DIR)/build/GooCal.build/$(CONFIGURATION)/GooCal.build/Objects-normal/$(CURRENT_ARCH)/LaunchAtLoginService.o",
-				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.karimfatehi.GooCalTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
@@ -465,11 +460,6 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.6;
 				MARKETING_VERSION = 1.0;
-				OTHER_LDFLAGS = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/build/GooCal.build/$(CONFIGURATION)/GooCal.build/Objects-normal/$(CURRENT_ARCH)/AppState.o",
-					"$(PROJECT_DIR)/build/GooCal.build/$(CONFIGURATION)/GooCal.build/Objects-normal/$(CURRENT_ARCH)/LaunchAtLoginService.o",
-				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.karimfatehi.GooCalTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
