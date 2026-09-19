@@ -1,10 +1,30 @@
-# macOS
-.DS_Store
-
 # Xcode
 build/
 DerivedData/
 *.moved-aside
 *.xcuserstate
+
+## User settings
 xcuserdata/
+*.xcuserdatad/
 *.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+
+## Build & packaging artifacts
+*.ipa
+*.dSYM.zip
+*.dSYM
+*.hmap
+
+## Swift Package Manager
+.build/
+.swiftpm/
+
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.Spotlight-V100
+.Trashes
