@@ -1,26 +1,33 @@
-# Xcode
+# Xcode & Build Artifacts
 build/
 DerivedData/
 *.moved-aside
 *.xcuserstate
 
-## User settings
+## User Settings
 xcuserdata/
 *.xcuserdatad/
 *.xcworkspace/xcuserdata/
 *.xcodeproj/xcuserdata/
 
-## Build & packaging artifacts
+## Build, Test & Packaging Artifacts
+dist/
+*.dmg
+*.zip
 *.ipa
 *.dSYM.zip
 *.dSYM
 *.hmap
+*.profraw
+*.xcresult
+TestResults.xcresult
+release_notes.md
 
 ## Swift Package Manager
 .build/
 .swiftpm/
 
-# macOS system files
+## macOS System Files
 .DS_Store
 .AppleDouble
 .LSOverride
