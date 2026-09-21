@@ -15,6 +15,35 @@ struct CalendarServiceTests {
         let message: String
     }
 
+    private final class SpyEventStore: EKEventStore, @unchecked Sendable {
+        private let lock = NSLock()
+        private var _refreshSourcesCount = 0
+
+        var refreshSourcesCount: Int {
+            lock.withLock { _refreshSourcesCount }
+        }
+
+        override func refreshSourcesIfNecessary() {
+            lock.withLock { _refreshSourcesCount += 1 }
+        }
+    }
+
+    private actor ChangeTracker {
+        private(set) var count = 0
+
+        func record() {
+            count += 1
+        }
+
+        func waitForCount(_ target: Int, maxAttempts: Int = 100) async -> Bool {
+            for _ in 0..<maxAttempts {
+                if count >= target { return true }
+                try? await Task.sleep(for: .milliseconds(20))
+            }
+            return count >= target
+        }
+    }
+
     @Test("Mock service reports configured authorization status across all lifecycle phases")
     func authorizationStatusReflectsInjectedState() {
         for status in CalendarAuthorizationStatus.allCases {
@@ -193,5 +222,241 @@ struct CalendarServiceTests {
         let store = EKEventStore()
         let event = EKEvent(eventStore: store)
         #expect(!event.isCurrentUserForScheduling)
+    }
+
+    // MARK: - Phase 2: refreshSources & storeChanges Behavioral Contracts
+
+    @Test("MockCalendarService refreshSources tracks invocations and handles success")
+    func mockRefreshSourcesSuccessAndCallTracking() async throws {
+        let mock = MockCalendarService()
+        #expect(mock.refreshSourcesCallCount == 0)
+
+        try await mock.refreshSources()
+        #expect(mock.refreshSourcesCallCount == 1)
+
+        try await mock.refreshSources()
+        #expect(mock.refreshSourcesCallCount == 2)
+    }
+
+    @Test("MockCalendarService refreshSources propagates configured errors and increments call count")
+    func mockRefreshSourcesErrorPropagation() async {
+        let expectedError = TestError(message: "CalDAV server unreachable")
+        let mock = MockCalendarService(refreshSourcesResult: .failure(expectedError))
+
+        #expect(mock.refreshSourcesCallCount == 0)
+
+        await #expect(throws: TestError.self) {
+            try await mock.refreshSources()
+        }
+
+        #expect(mock.refreshSourcesCallCount == 1)
+
+        mock.setRefreshSourcesResult(.success(()))
+        do {
+            try await mock.refreshSources()
+            #expect(mock.refreshSourcesCallCount == 2)
+        } catch {
+            Issue.record("Expected refreshSources to succeed after clearing error")
+        }
+    }
+
+    @Test("EventKitCalendarService refreshSources triggers refreshSourcesIfNecessary on eventStore")
+    func eventKitRefreshSourcesDelegatesToStore() async throws {
+        let spyStore = SpyEventStore()
+        let service = EventKitCalendarService(eventStore: spyStore)
+
+        #expect(spyStore.refreshSourcesCount == 0)
+        try await service.refreshSources()
+        #expect(spyStore.refreshSourcesCount == 1)
+    }
+
+    @Test("MockCalendarService storeChanges stream receives emitted change events asynchronously")
+    func mockStoreChangesReceivesEmittedEvents() async throws {
+        let mock = MockCalendarService()
+        let tracker = ChangeTracker()
+
+        let stream = mock.storeChanges
+        let task = Task {
+            for await _ in stream {
+                await tracker.record()
+            }
+        }
+
+        #expect(await tracker.count == 0)
+
+        mock.emitStoreChange()
+        let firstReached = await tracker.waitForCount(1)
+        #expect(firstReached)
+        #expect(await tracker.count == 1)
+
+        mock.emitStoreChange()
+        mock.emitStoreChange()
+        let allReached = await tracker.waitForCount(3)
+        #expect(allReached)
+        #expect(await tracker.count == 3)
+
+        task.cancel()
+    }
+
+    @Test("MockCalendarService storeChanges delivers change events to multiple concurrent subscribers")
+    func mockStoreChangesMultipleSubscribers() async throws {
+        let mock = MockCalendarService()
+        let trackerA = ChangeTracker()
+        let trackerB = ChangeTracker()
+
+        let taskA = Task {
+            for await _ in mock.storeChanges {
+                await trackerA.record()
+            }
+        }
+
+        let taskB = Task {
+            for await _ in mock.storeChanges {
+                await trackerB.record()
+            }
+        }
+
+        // Wait for both streams to register continuations
+        for _ in 0..<50 {
+            if mock.activeStoreChangeSubscriberCount == 2 { break }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(mock.activeStoreChangeSubscriberCount == 2)
+
+        mock.emitStoreChange()
+        let reachedA = await trackerA.waitForCount(1)
+        let reachedB = await trackerB.waitForCount(1)
+
+        #expect(reachedA)
+        #expect(reachedB)
+        #expect(await trackerA.count == 1)
+        #expect(await trackerB.count == 1)
+
+        taskA.cancel()
+        taskB.cancel()
+    }
+
+    @Test("MockCalendarService storeChanges stream cleans up continuation when consumer task cancels")
+    func mockStoreChangesCleansUpOnCancellation() async throws {
+        let mock = MockCalendarService()
+        #expect(mock.activeStoreChangeSubscriberCount == 0)
+
+        let task = Task {
+            for await _ in mock.storeChanges {
+                // Keep stream active
+            }
+        }
+
+        // Allow task to initialize stream and register continuation
+        for _ in 0..<50 {
+            if mock.activeStoreChangeSubscriberCount == 1 { break }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(mock.activeStoreChangeSubscriberCount == 1)
+
+        task.cancel()
+
+        // Wait for cancellation handler to unregister continuation
+        for _ in 0..<50 {
+            if mock.activeStoreChangeSubscriberCount == 0 { break }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(mock.activeStoreChangeSubscriberCount == 0)
+    }
+
+    @Test("EventKitCalendarService storeChanges observes system notification and delivers change events")
+    func eventKitStoreChangesObservesNotification() async throws {
+        let notificationCenter = NotificationCenter()
+        let service = EventKitCalendarService(notificationCenter: notificationCenter)
+        let tracker = ChangeTracker()
+
+        let task = Task {
+            for await _ in service.storeChanges {
+                await tracker.record()
+            }
+        }
+
+        // Wait for async stream observation task to connect and process first notification
+        for _ in 0..<30 {
+            notificationCenter.post(name: .EKEventStoreChanged, object: nil)
+            if await tracker.waitForCount(1, maxAttempts: 3) { break }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+
+        let firstReached = await tracker.waitForCount(1)
+        #expect(firstReached)
+        let currentCount = await tracker.count
+        #expect(currentCount >= 1)
+
+        notificationCenter.post(name: .EKEventStoreChanged, object: nil)
+        let secondReached = await tracker.waitForCount(currentCount + 1)
+        #expect(secondReached)
+        #expect(await tracker.count == currentCount + 1)
+
+        task.cancel()
+    }
+
+    @Test("EventKitCalendarService storeChanges cleans up task and continuation on task cancellation")
+    func eventKitStoreChangesCancellationTermination() async throws {
+        let notificationCenter = NotificationCenter()
+        let service = EventKitCalendarService(notificationCenter: notificationCenter)
+        let tracker = ChangeTracker()
+
+        let task = Task {
+            for await _ in service.storeChanges {
+                await tracker.record()
+            }
+        }
+
+        for _ in 0..<30 {
+            notificationCenter.post(name: .EKEventStoreChanged, object: nil)
+            if await tracker.waitForCount(1, maxAttempts: 3) { break }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+
+        let firstReached = await tracker.waitForCount(1)
+        #expect(firstReached)
+        let countBeforeCancel = await tracker.count
+        #expect(countBeforeCancel >= 1)
+
+        task.cancel()
+        _ = await task.result
+
+        // Posting after cancellation should not increment tracker
+        notificationCenter.post(name: .EKEventStoreChanged, object: nil)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(await tracker.count == countBeforeCancel)
+    }
+
+    @Test("CalendarService concurrent operations maintain safety across queries, refreshes, and stream notifications")
+    func concurrentQueriesRefreshesAndStreamEmissions() async throws {
+        let mock = MockCalendarService()
+        let tracker = ChangeTracker()
+        let iterations = 30
+
+        let observationTask = Task {
+            for await _ in mock.storeChanges {
+                await tracker.record()
+            }
+        }
+
+        await withTaskGroup(of: Void.self) { group in
+            for i in 0..<iterations {
+                group.addTask {
+                    let testDate = Date(timeIntervalSince1970: Double(i * 100))
+                    _ = try? await mock.events(for: testDate)
+                    _ = try? await mock.refreshSources()
+                    mock.emitStoreChange()
+                }
+            }
+        }
+
+        let reached = await tracker.waitForCount(iterations)
+        #expect(reached)
+        #expect(await tracker.count >= iterations)
+        #expect(mock.refreshSourcesCallCount == iterations)
+        #expect(mock.requestedDates.count == iterations)
+
+        observationTask.cancel()
     }
 }

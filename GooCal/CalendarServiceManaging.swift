@@ -35,4 +35,10 @@ public protocol CalendarServiceManaging: Sendable {
     /// - Parameter date: The reference date identifying the 24-hour window to query.
     /// - Returns: Array of `CalendarEvent` models occurring within that 24-hour span.
     func events(for date: Date) async throws -> [CalendarEvent]
+
+    /// Requests that macOS refresh calendar sources if necessary (e.g. pulling remote accounts).
+    func refreshSources() async throws
+
+    /// An asynchronous stream of notifications indicating that the calendar database has changed.
+    var storeChanges: AsyncStream<Void> { get }
 }

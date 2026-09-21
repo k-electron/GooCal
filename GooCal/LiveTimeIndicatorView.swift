@@ -19,12 +19,12 @@ public struct LiveTimeIndicatorView: View {
     ///
     /// - Parameters:
     ///   - referenceDate: The calendar date being inspected on the timeline.
-    ///   - rulerWidth: Width of the leading time ruler column. Defaults to 50 pt.
+    ///   - rulerWidth: Width of the leading time ruler column. Defaults to 56 pt.
     ///   - coordinateConverter: Converter mapping timestamps to vertical point offsets.
     ///   - calendar: Calendar used for same-day evaluation and date component extraction.
     public init(
         referenceDate: Date = Date(),
-        rulerWidth: CGFloat = 50,
+        rulerWidth: CGFloat = 56,
         coordinateConverter: TimelineCoordinateConverter? = nil,
         calendar: Calendar = .current
     ) {
@@ -65,15 +65,20 @@ public struct LiveTimeIndicatorView: View {
                             .offset(x: rulerWidth, y: y - 0.75)
 
                         // Small red time capsule badge positioned on the ruler
-                        Text(formattedTime(for: context.date))
-                            .font(.system(size: 9, weight: .bold))
-                            .monospacedDigit()
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 2)
-                            .background(Color.red, in: Capsule())
-                            .frame(width: rulerWidth - 4, alignment: .trailing)
-                            .offset(x: 2, y: y - 8)
+                        HStack(spacing: 0) {
+                            Spacer(minLength: 0)
+                            Text(formattedTime(for: context.date))
+                                .font(.system(size: 9, weight: .bold))
+                                .monospacedDigit()
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: true)
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(Color.red, in: Capsule())
+                        }
+                        .frame(width: rulerWidth - 2)
+                        .offset(x: 0, y: y - 8)
                     }
                 }
             }

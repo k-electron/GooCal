@@ -21,7 +21,7 @@ struct TimelineGridViewTests {
     @Test("TimelineGridView initializes with specified or default geometry parameters")
     func gridViewDefaultParameters() {
         let defaultGrid = TimelineGridView()
-        #expect(defaultGrid.rulerWidth == 50.0)
+        #expect(defaultGrid.rulerWidth == 56.0)
         #expect(defaultGrid.totalHeight == 960.0)
         #expect(defaultGrid.pointsPerHour == 40.0)
 
@@ -248,6 +248,7 @@ struct LiveTimeIndicatorViewTests {
     @Test("LiveTimeIndicatorView formats non-empty time string for badge display")
     func formattedTimeString() {
         let indicator = LiveTimeIndicatorView()
+        #expect(indicator.rulerWidth == 56.0)
         let formatted = indicator.formattedTime(for: Date())
         #expect(!formatted.isEmpty)
     }
@@ -408,7 +409,19 @@ struct DailyTimelineViewTests {
         let event = CalendarEvent(title: "Render Check", startDate: start, endDate: end)
 
         let view = DailyTimelineView(events: [event], selectedDate: activeDate, calendar: cal)
+        #expect(view.rulerWidth == 56.0)
         let _ = view.body
+    }
+
+    @Test("DailyTimelineView targetScrollOffset handles non-today dates cleanly")
+    func targetScrollOffsetNonTodayProjection() {
+        let cal = utcCalendar
+        let tomorrow = cal.date(byAdding: .day, value: 1, to: Date())!
+        let view = DailyTimelineView(events: [], selectedDate: tomorrow, calendar: cal)
+        // targetScrollOffset must produce a valid coordinate within [0, totalHeight - viewportHeight]
+        let offset = view.targetScrollOffset
+        #expect(offset >= 0.0)
+        #expect(offset <= view.coordinateConverter.totalHeight - view.viewportHeight)
     }
 }
 

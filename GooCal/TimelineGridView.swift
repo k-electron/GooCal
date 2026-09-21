@@ -18,12 +18,12 @@ public struct TimelineGridView: View {
     /// Creates a timeline grid view.
     ///
     /// - Parameters:
-    ///   - rulerWidth: Width in points allocated for the leading hour-label ruler column.
+    ///   - rulerWidth: Width in points allocated for the leading hour-label ruler column (default 56 pt).
     ///   - totalHeight: Total canvas height spanning 24 hours (default 960 pt).
     ///   - pointsPerHour: Vertical spacing in points allocated per hour (default 40 pt).
     ///   - calendar: Calendar used for date-to-hour calculations.
     public init(
-        rulerWidth: CGFloat = 50,
+        rulerWidth: CGFloat = 56,
         totalHeight: CGFloat = 960,
         pointsPerHour: CGFloat = 40,
         calendar: Calendar = .current

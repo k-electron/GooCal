@@ -16,8 +16,12 @@ public final class MockCalendarService: CalendarServiceManaging, @unchecked Send
     private var _status: CalendarAuthorizationStatus
     private var _requestAccessResult: Result<Bool, any Error>
     private var _eventsResult: Result<[CalendarEvent], any Error>
+    private var _refreshSourcesResult: Result<Void, any Error>
+    private var _refreshSourcesDelay: Duration?
     private var _requestAccessCallCount: Int = 0
+    private var _refreshSourcesCallCount: Int = 0
     private var _requestedDates: [Date] = []
+    private var _continuations: [UUID: AsyncStream<Void>.Continuation] = [:]
 
     /// Creates a mock service with customizable initial return values.
     ///
@@ -25,14 +29,17 @@ public final class MockCalendarService: CalendarServiceManaging, @unchecked Send
     ///   - authorizationStatus: Initial authorization state returned by `authorizationStatus()`.
     ///   - requestAccessResult: Result returned or thrown when `requestAccess()` is invoked.
     ///   - eventsResult: Result returned or thrown when `events(for:)` is invoked.
+    ///   - refreshSourcesResult: Result returned or thrown when `refreshSources()` is invoked.
     public init(
         authorizationStatus: CalendarAuthorizationStatus = .authorized,
         requestAccessResult: Result<Bool, any Error> = .success(true),
-        eventsResult: Result<[CalendarEvent], any Error> = .success([])
+        eventsResult: Result<[CalendarEvent], any Error> = .success([]),
+        refreshSourcesResult: Result<Void, any Error> = .success(())
     ) {
         self._status = authorizationStatus
         self._requestAccessResult = requestAccessResult
         self._eventsResult = eventsResult
+        self._refreshSourcesResult = refreshSourcesResult
     }
 
     public func authorizationStatus() -> CalendarAuthorizationStatus {
@@ -87,6 +94,76 @@ public final class MockCalendarService: CalendarServiceManaging, @unchecked Send
             case .failure(let error):
                 throw error
             }
+        }
+    }
+
+    public var refreshSourcesCallCount: Int {
+        lock.withLock { _refreshSourcesCallCount }
+    }
+
+    public func setRefreshSourcesResult(_ result: Result<Void, any Error>) {
+        lock.withLock { _refreshSourcesResult = result }
+    }
+
+    public func setRefreshSourcesDelay(_ delay: Duration?) {
+        lock.withLock { _refreshSourcesDelay = delay }
+    }
+
+    public func refreshSources() async throws {
+        let delay = lock.withLock { _refreshSourcesDelay }
+        if let delay {
+            try await Task.sleep(for: delay)
+        }
+        try lock.withLock {
+            _refreshSourcesCallCount += 1
+            switch _refreshSourcesResult {
+            case .success:
+                return
+            case .failure(let error):
+                throw error
+            }
+        }
+    }
+
+    public var storeChanges: AsyncStream<Void> {
+        let id = UUID()
+        return AsyncStream { continuation in
+            lock.withLock {
+                _continuations[id] = continuation
+            }
+            continuation.onTermination = { [weak self] _ in
+                self?.removeContinuation(id: id)
+            }
+        }
+    }
+
+    private func removeContinuation(id: UUID) {
+        lock.withLock {
+            _ = _continuations.removeValue(forKey: id)
+        }
+    }
+
+    /// Emits a calendar database change notification to all active `storeChanges` streams.
+    public func emitStoreChange() {
+        let activeContinuations = lock.withLock {
+            Array(_continuations.values)
+        }
+        for continuation in activeContinuations {
+            continuation.yield(())
+        }
+    }
+
+    /// Number of active consumers currently subscribed to `storeChanges`.
+    public var activeStoreChangeSubscriberCount: Int {
+        lock.withLock { _continuations.count }
+    }
+
+    deinit {
+        let activeContinuations = lock.withLock {
+            Array(_continuations.values)
+        }
+        for continuation in activeContinuations {
+            continuation.finish()
         }
     }
 }

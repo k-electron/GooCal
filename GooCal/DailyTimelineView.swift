@@ -12,6 +12,7 @@ import SwiftUI
 /// the current time at approximately one-third from the viewport top on appearance.
 public struct DailyTimelineView: View {
     public let events: [CalendarEvent]
+    public let precomputedPlacedEvents: [PlacedEvent]?
     public let selectedDate: Date
     public let viewportHeight: CGFloat
     public let rulerWidth: CGFloat
@@ -23,22 +24,25 @@ public struct DailyTimelineView: View {
     ///
     /// - Parameters:
     ///   - events: Calendar events to lay out and render.
+    ///   - placedEvents: Precomputed placed events. If nil, layout will be computed on demand.
     ///   - selectedDate: The active calendar day being displayed. Defaults to current date.
     ///   - viewportHeight: Visible height of the scrolling viewport in points. Defaults to 480 pt.
-    ///   - rulerWidth: Width in points for the time ruler. Defaults to 50 pt.
+    ///   - rulerWidth: Width in points for the time ruler. Defaults to 56 pt.
     ///   - coordinateConverter: Converter responsible for time-to-coordinate mapping. Defaults to `.default`.
     ///   - calendar: Calendar used for date operations. Defaults to `.current`.
     ///   - authorizationStatus: Current system calendar authorization status. Defaults to `.authorized`.
     public init(
         events: [CalendarEvent],
+        placedEvents: [PlacedEvent]? = nil,
         selectedDate: Date = Date(),
         viewportHeight: CGFloat = 480,
-        rulerWidth: CGFloat = 50,
+        rulerWidth: CGFloat = 56,
         coordinateConverter: TimelineCoordinateConverter? = nil,
         calendar: Calendar = .current,
         authorizationStatus: CalendarAuthorizationStatus = .authorized
     ) {
         self.events = events
+        self.precomputedPlacedEvents = placedEvents
         self.selectedDate = selectedDate
         self.viewportHeight = viewportHeight
         self.rulerWidth = rulerWidth
@@ -47,8 +51,15 @@ public struct DailyTimelineView: View {
         self.coordinateConverter = coordinateConverter ?? TimelineCoordinateConverter(calendar: calendar)
     }
 
-    /// Placed event cards computed via `TimelineLayoutEngine`.
+    /// Placed event cards computed via `TimelineLayoutEngine` or precomputed by caller.
+    ///
+    /// Binding to precomputed `placedEvents` from `AppState` avoids layout thrashing
+    /// and expensive clustering passes inside view body evaluation, ensuring event cards
+    /// render instantaneously without layout jumps.
     public var placedEvents: [PlacedEvent] {
+        if let precomputed = precomputedPlacedEvents {
+            return precomputed
+        }
         if calendar == TimelineLayoutEngine.shared.calendar {
             return TimelineLayoutEngine.shared.layoutEvents(
                 events,
@@ -64,9 +75,24 @@ public struct DailyTimelineView: View {
         }
     }
 
+    /// Indicates whether event card placements were supplied upfront by caller or computed on demand.
+    public var isUsingPrecomputedLayout: Bool {
+        precomputedPlacedEvents != nil
+    }
+
     /// Calculates the vertical scroll target offset anchoring current time at one-third of the viewport.
     public var targetScrollOffset: CGFloat {
-        targetScrollOffset(for: Date.now)
+        if calendar.isDate(selectedDate, inSameDayAs: Date.now) {
+            return targetScrollOffset(for: Date.now)
+        }
+        let nowComponents = calendar.dateComponents([.hour, .minute, .second], from: Date.now)
+        let sameTimeOnSelectedDay = calendar.date(
+            bySettingHour: nowComponents.hour ?? 8,
+            minute: nowComponents.minute ?? 0,
+            second: nowComponents.second ?? 0,
+            of: selectedDate
+        ) ?? selectedDate
+        return targetScrollOffset(for: sameTimeOnSelectedDay)
     }
 
     /// Calculates the target scroll offset for a specific anchor date.
@@ -94,11 +120,17 @@ public struct DailyTimelineView: View {
                         calendar: calendar
                     )
 
-                    // Invisible scroll target view anchored to one-third viewport offset
-                    Color.clear
-                        .frame(width: 1, height: 1)
-                        .offset(y: targetScrollOffset)
-                        .id("target_scroll_anchor")
+                    // Invisible scroll target view with concrete layout frame anchored to targetScrollOffset
+                    VStack(spacing: 0) {
+                        Color.clear
+                            .frame(height: max(0, targetScrollOffset))
+                        Color.clear
+                            .frame(width: 1, height: 1)
+                            .id("target_scroll_anchor")
+                        Spacer(minLength: 0)
+                    }
+                    .frame(width: 1, height: coordinateConverter.totalHeight)
+                    .allowsHitTesting(false)
 
                     // Placed event cards positioned across parallel columns
                     GeometryReader { geometry in
@@ -127,18 +159,23 @@ public struct DailyTimelineView: View {
                 .frame(height: coordinateConverter.totalHeight)
                 .task(id: selectedDate) {
                     // Initial immediate scroll positioning
-                    proxy.scrollTo("target_scroll_anchor", anchor: .top)
+                    performScroll(proxy: proxy)
 
-                    // Asynchronous dispatch to accommodate initial window and popover frame stabilization.
-                    // Automatically cancelled if the view is dismissed or selectedDate changes.
-                    try? await Task.sleep(nanoseconds: 50_000_000)
-                    guard !Task.isCancelled else { return }
-                    proxy.scrollTo("target_scroll_anchor", anchor: .top)
+                    // Staggered attempts to ensure scroll aligns with settled AppKit popover presentation geometry
+                    for delay in [40_000_000, 100_000_000, 200_000_000] as [UInt64] {
+                        try? await Task.sleep(nanoseconds: delay)
+                        guard !Task.isCancelled else { return }
+                        performScroll(proxy: proxy)
+                    }
                 }
             }
         }
     }
 }
+
+    private func performScroll(proxy: ScrollViewProxy) {
+        proxy.scrollTo("target_scroll_anchor", anchor: .top)
+    }
 }
 
 #Preview {

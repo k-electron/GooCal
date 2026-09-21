@@ -241,6 +241,25 @@ public struct TimelineLayoutEngine: Sendable {
         )
     }
 
+    /// Convenience static method matching OpenSpec design.
+    public static func layout(
+        events: [CalendarEvent],
+        for date: Date,
+        coordinateConverter: TimelineCoordinateConverter = .default,
+        calendar: Calendar = .current
+    ) -> [PlacedEvent] {
+        layoutEvents(events, for: date, coordinateConverter: coordinateConverter, calendar: calendar)
+    }
+
+    /// Convenience instance method matching OpenSpec design.
+    public func layout(
+        events: [CalendarEvent],
+        for date: Date,
+        coordinateConverter: TimelineCoordinateConverter = .default
+    ) -> [PlacedEvent] {
+        layoutEvents(events, for: date, coordinateConverter: coordinateConverter)
+    }
+
     // MARK: - Precedence Comparator
 
     /// Evaluates relative ranking between two concurrent events.

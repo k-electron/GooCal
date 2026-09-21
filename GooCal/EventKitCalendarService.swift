@@ -24,6 +24,7 @@ extension EKEvent {
 /// `CalendarEvent` domain models.
 public final class EventKitCalendarService: CalendarServiceManaging, @unchecked Sendable {
     private let eventStore: EKEventStore
+    private let notificationCenter: NotificationCenter
 
     /// Fallback color used if a calendar does not report a valid `CGColor`.
     public static let defaultCalendarColor = CGColor(srgbRed: 0.2, green: 0.5, blue: 1.0, alpha: 1.0)
@@ -33,6 +34,20 @@ public final class EventKitCalendarService: CalendarServiceManaging, @unchecked 
     /// - Parameter eventStore: The event store managing access to the macOS calendar database.
     public init(eventStore: EKEventStore = EKEventStore()) {
         self.eventStore = eventStore
+        self.notificationCenter = .default
+    }
+
+    /// Initializes the service with an injected `EKEventStore` and `NotificationCenter`.
+    ///
+    /// - Parameters:
+    ///   - eventStore: The event store managing access to the macOS calendar database.
+    ///   - notificationCenter: The notification center observing system notifications.
+    public init(
+        eventStore: EKEventStore = EKEventStore(),
+        notificationCenter: NotificationCenter
+    ) {
+        self.eventStore = eventStore
+        self.notificationCenter = notificationCenter
     }
 
     /// Queries the current authorization status for calendar events from EventKit.
@@ -71,6 +86,32 @@ public final class EventKitCalendarService: CalendarServiceManaging, @unchecked 
         let predicate = eventStore.predicateForEvents(withStart: startOfDay, end: endOfDay, calendars: nil)
         let ekEvents = eventStore.events(matching: predicate)
         return ekEvents.map(Self.map(ekEvent:))
+    }
+
+    /// Requests that macOS refresh calendar sources if necessary, pulling any changes
+    /// that may have occurred on remote servers without blocking the user interface.
+    public func refreshSources() async throws {
+        eventStore.refreshSourcesIfNecessary()
+    }
+
+    /// An asynchronous stream of notifications indicating that the calendar database has changed.
+    ///
+    /// Observes `EKEventStoreChanged` notifications. Cleans up the underlying notification
+    /// observation task when the stream terminates or the caller cancels iteration.
+    public var storeChanges: AsyncStream<Void> {
+        let center = self.notificationCenter
+        return AsyncStream { continuation in
+            let task = Task {
+                for await _ in center.notifications(named: .EKEventStoreChanged) {
+                    guard !Task.isCancelled else { break }
+                    continuation.yield(())
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { @Sendable _ in
+                task.cancel()
+            }
+        }
     }
 
     /// Maps EventKit availability enum to domain AvailabilityStatus.
