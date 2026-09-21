@@ -19,23 +19,36 @@ public final class AppState {
     public var statusMessage: String
     public private(set) var lastError: (any Error)?
 
+    public private(set) var events: [CalendarEvent] = []
+    public private(set) var calendarAuthorizationStatus: CalendarAuthorizationStatus
+    public var selectedDate: Date = Date()
+    public private(set) var isLoadingEvents: Bool = false
+
+    public let calendarService: any CalendarServiceManaging
     private let launchAtLoginManager: any LaunchAtLoginManaging
 
     /// Creates an application state instance.
     ///
-    /// Accepts a custom `LaunchAtLoginManaging` to enable deterministic unit testing
-    /// without mutating system-wide login items.
+    /// Accepts custom `LaunchAtLoginManaging` and `CalendarServiceManaging` to enable
+    /// deterministic unit testing without mutating system-wide login items or relying on live TCC permissions.
     public init(
         launchAtLoginManager: any LaunchAtLoginManaging = SMAppServiceLaunchAtLoginManager(),
+        calendarService: any CalendarServiceManaging = EventKitCalendarService(),
         menuBarTitle: String = "GooCal: No Upcoming Meetings",
         menuBarIconName: String = "calendar",
-        statusMessage: String = "No upcoming meetings"
+        statusMessage: String = "No upcoming meetings",
+        selectedDate: Date = Date()
     ) {
         self.launchAtLoginManager = launchAtLoginManager
+        self.calendarService = calendarService
         self.menuBarTitle = menuBarTitle
         self.menuBarIconName = menuBarIconName
         self.statusMessage = statusMessage
+        self.selectedDate = selectedDate
         self.isLaunchAtLoginEnabled = launchAtLoginManager.isEnabled
+        self.calendarAuthorizationStatus = calendarService.authorizationStatus()
+        self.events = []
+        self.isLoadingEvents = false
         self.lastError = nil
     }
 
@@ -62,6 +75,94 @@ public final class AppState {
             isLaunchAtLoginEnabled = launchAtLoginManager.isEnabled
             statusMessage = "Failed to update launch at login: \(error.localizedDescription)"
             lastError = error
+        }
+    }
+
+    /// Explicitly requests calendar access and triggers an events refresh.
+    public func requestCalendarAccess() async {
+        do {
+            _ = try await calendarService.requestAccess()
+            await refreshEvents()
+        } catch {
+            self.lastError = error
+            self.calendarAuthorizationStatus = calendarService.authorizationStatus()
+            self.statusMessage = "Failed to request calendar access: \(error.localizedDescription)"
+        }
+    }
+
+    /// Updates the selected active date and queries calendar events for the new 24-hour day.
+    public func setSelectedDate(_ date: Date) async {
+        self.selectedDate = date
+        await refreshEvents()
+    }
+
+    /// Refreshes calendar authorization and queries calendar events for the active date.
+    public func refreshEvents() async {
+        isLoadingEvents = true
+        defer { isLoadingEvents = false }
+
+        calendarAuthorizationStatus = calendarService.authorizationStatus()
+        if calendarAuthorizationStatus == .notDetermined {
+            do {
+                _ = try await calendarService.requestAccess()
+                calendarAuthorizationStatus = calendarService.authorizationStatus()
+            } catch {
+                self.lastError = error
+                self.statusMessage = "Failed to request calendar access: \(error.localizedDescription)"
+                return
+            }
+        }
+
+        switch calendarAuthorizationStatus {
+        case .authorized:
+            do {
+                let fetchedEvents = try await calendarService.events(for: selectedDate)
+                self.events = fetchedEvents
+                self.lastError = nil
+                updatePresentationForLoadedEvents(with: fetchedEvents)
+            } catch {
+                self.lastError = error
+                self.statusMessage = "Failed to load events: \(error.localizedDescription)"
+            }
+
+        case .denied, .restricted:
+            self.events = []
+            self.menuBarTitle = "GooCal: Calendar Access Required"
+            self.statusMessage = "Calendar access is denied or restricted"
+
+        case .notDetermined:
+            self.events = []
+        }
+    }
+
+    /// Updates menu bar title and status message based on queried events and current time context.
+    private func updatePresentationForLoadedEvents(with events: [CalendarEvent]) {
+        let calendar = Calendar.current
+        let isToday = calendar.isDateInToday(selectedDate)
+        let activeEvents = events.filter { !$0.isAllDay && $0.participantStatus != .declined }
+
+        if isToday {
+            let now = Date.now
+            let upcoming = activeEvents
+                .filter { $0.endDate > now }
+                .sorted { $0.startDate < $1.startDate }
+
+            if let nextEvent = upcoming.first {
+                menuBarTitle = "GooCal: \(nextEvent.title)"
+                if nextEvent.startDate <= now {
+                    statusMessage = "Current meeting: \(nextEvent.title)"
+                } else {
+                    let timeStr = nextEvent.startDate.formatted(date: .omitted, time: .shortened)
+                    statusMessage = "Next at \(timeStr): \(nextEvent.title)"
+                }
+            } else {
+                menuBarTitle = "GooCal: No Upcoming Meetings"
+                statusMessage = events.isEmpty ? "No upcoming meetings" : "\(events.count) event\(events.count == 1 ? "" : "s") today"
+            }
+        } else {
+            let count = events.count
+            let dateStr = selectedDate.formatted(.dateTime.month().day())
+            statusMessage = "\(count) event\(count == 1 ? "" : "s") on \(dateStr)"
         }
     }
 }
